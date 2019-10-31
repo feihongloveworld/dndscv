@@ -37,66 +37,101 @@
 #' 
 #' @export
 
-dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", kc = "cgc81", cv = "hg19", max_muts_per_gene_per_sample = 3, max_coding_muts_per_sample = 3000, use_indel_sites = T, min_indels = 5, maxcovs = 20, constrain_wnon_wspl = T, outp = 3, numcode = 1, outmats = F) {
+dndscv = function(mutations, 
+                  gene_list = NULL, 
+                  refdb = "hg19", 
+                  sm = "192r_3w", 
+                  kc = "cgc81", 
+                  cv = "hg19", 
+                  max_muts_per_gene_per_sample = 3, 
+                  max_coding_muts_per_sample = 3000, 
+                  use_indel_sites = T, 
+                  min_indels = 5, 
+                  maxcovs = 20, 
+                  constrain_wnon_wspl = T, 
+                  outp = 3, 
+                  numcode = 1, 
+                  outmats = F) {
 
     ## 1. Environment
     message("[1] Loading the environment...")
-
+    ## 突变提取前五列
     mutations = mutations[,1:5] # Restricting input matrix to first 5 columns
+    ## 转化为字符串
+#sampleID                        chr  pos       ref  mut
+#F16061220030-CLN                17   7577058   C    A
+#F16061220030-CLN                3    47155465  C    T
+#ct-C1512289427-S-CLN            17   7578441   G    T
+#ct-C16042816301-S-CLN           17   7578441   G    T
+#ct-C16060119301-S-CLN           17   7578441   G    T
+#ct-C16060119301-S-YH095-CLN-RE  17   7578441   G    T
+#ct-C16092028993-S-CLN           2    47601106  TG   CA
+#ct-C16092028993-S-CLN           17   7578206   T    C
+#F16053119231-CLN                17   7577538   C    T
+
     mutations[,c(1,2,3,4,5)] = lapply(mutations[,c(1,2,3,4,5)], as.character) # Factors to character
+    ## 变异位点转化为数值型 
     mutations[[3]] = as.numeric(mutations[[3]]) # Chromosome position as numeric
+    ## 提取发生真实碱基突变的位点
     mutations = mutations[mutations[,4]!=mutations[,5],] # Removing mutations with identical reference and mutant base
+    ## 添加表头
     colnames(mutations) = c("sampleID","chr","pos","ref","mut")
-    
+    ## 提取存在NA的行，返回index
     # Removing NA entries from the input mutation table
     indna = which(is.na(mutations),arr.ind=T)
+    ## 整行去除含NA的突变
     if (nrow(indna)>0) {
         mutations = mutations[-unique(indna[,1]),] # Removing entries with an NA in any row
         warning(sprintf("%0.0f rows in the input table contained NA entries and have been removed. Please investigate.",length(unique(indna[,1]))))
     }
-    
+    ## 载入参考数据库
     # [Input] Reference database
     if (refdb == "hg19") {
         data("refcds_hg19", package="dndscv")
-        if (any(gene_list=="CDKN2A")) { # Replace CDKN2A in the input gene list with two isoforms
+        if (any(gene_list=="CDKN2A")) { # Replace CDKN2A in the input gene list with two isoforms  为啥
             gene_list = unique(c(setdiff(gene_list,"CDKN2A"),"CDKN2A.p14arf","CDKN2A.p16INK4a"))
         }
     } else {
         load(refdb)
     }
-    
+    ## 输入基因列表，默认全部基因
     # [Input] Gene list (The user can input a gene list as a character vector)
+    ## 
     if (is.null(gene_list)) {
         gene_list = sapply(RefCDS, function(x) x$gene_name) # All genes [default]
     } else { # Using only genes in the input gene list
+        ## 首先提取全部基因
         allg = sapply(RefCDS,function(x) x$gene_name)
+        ## 基因必须存在于全部基因中
         nonex = gene_list[!(gene_list %in% allg)]
+        ## 打印出不在列的基因
         if (length(nonex)>0) { stop(sprintf("The following input gene names are not in the RefCDS database: %s", paste(nonex,collapse=", "))) }
         RefCDS = RefCDS[allg %in% gene_list] # Only input genes
-        gr_genes = gr_genes[gr_genes$names %in% gene_list] # Only input genes
+        ## gr_genes
+        gr_genes = [gr_genes$names %in% gene_list] # Only input genes
     }
-
+    ## 协变量矩阵
     # [Input] Covariates (The user can input a custom set of covariates as a matrix)
     if (is.character(cv)) {
         data(list=sprintf("covariates_%s",cv), package="dndscv")
     } else {
         covs = cv
     }
-    
+    ## 已知癌症基因 默认使用CGC81数据库
     # [Input] Known cancer genes (The user can input a gene list as a character vector)
     if (kc[1] %in% c("cgc81")) {
         data(list=sprintf("cancergenes_%s",kc), package="dndscv")
     } else {
         known_cancergenes = kc
     }
-    
+    ## 突变模型  默认 192r_3w 用户可以提供一个个性化的突变模型作为举证
     # [Input] Substitution model (The user can also input a custom substitution model as a matrix)
     if (length(sm)==1) {
         data(list=sprintf("submod_%s",sm), package="dndscv")
     } else {
         substmodel = sm
     }
-    
+    ## 扩展的参考序列 是为了更快的访问，这部分是高级数据结构
     # Expanding the reference sequences [for faster access]
     for (j in 1:length(RefCDS)) {
         RefCDS[[j]]$seq_cds = base::strsplit(as.character(RefCDS[[j]]$seq_cds), split="")[[1]]
@@ -109,10 +144,10 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
         }
     }
     
-    
+    ## 突变注释
     ## 2. Mutation annotation
     message("[2] Annotating the mutations...")
-    
+    ## 三碱基构建
     nt = c("A","C","G","T")
     trinucs = paste(rep(nt,each=16,times=1),rep(nt,each=4,times=4),rep(nt,each=1,times=16), sep="")
     trinucinds = setNames(1:64, trinucs)
@@ -121,27 +156,27 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
         trinucsubs = c(trinucsubs, paste(trinucs[j], paste(substr(trinucs[j],1,1), setdiff(nt,substr(trinucs[j],2,2)), substr(trinucs[j],3,3), sep=""), sep=">"))
     }
     trinucsubsind = setNames(1:192, trinucsubs)
-    
+    ## 
     ind = setNames(1:length(RefCDS), sapply(RefCDS,function(x) x$gene_name))
     gr_genes_ind = ind[gr_genes$names]
-    
+    ## 警告：可能存在多碱基突变注释失败的情况,删除complex突变
     # Warning about possible unannotated dinucleotide substitutions
     if (any(diff(mutations$pos)==1)) {
         warning("Mutations observed in contiguous sites within a sample. Please annotate or remove dinucleotide or complex substitutions for best results.")
     }
-    
+    ## 警告：在不同样本中同一个突变不同实例
     # Warning about multiple instances of the same mutation in different sampleIDs
     if (nrow(unique(mutations[,2:5])) < nrow(mutations)) {
         warning("Same mutations observed in different sampleIDs. Please verify that these are independent events and remove duplicates otherwise.")
     }
-    
+    ## 突变的起始点
     # Start and end position of each mutation
     mutations$end = mutations$start = mutations$pos
     l = nchar(mutations$ref)-1 # Deletions of multiple bases
     mutations$end = mutations$end + l
     ind = substr(mutations$ref,1,1)==substr(mutations$mut,1,1) & nchar(mutations$ref)>nchar(mutations$mut) # Position correction for deletions annotated in the previous base (e.g. CA>C)
     mutations$start = mutations$start + ind
-    
+    ## 突变对应到基因上
     # Mapping mutations to genes
     gr_muts = GenomicRanges::GRanges(mutations$chr, IRanges::IRanges(mutations$start,mutations$end))
     ol = as.data.frame(GenomicRanges::findOverlaps(gr_muts, gr_genes, type="any", select="all"))
@@ -149,7 +184,7 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
     mutations$geneind = gr_genes_ind[ol[,2]]
     mutations$gene = sapply(RefCDS,function(x) x$gene_name)[mutations$geneind]
     mutations = unique(mutations)
-    
+    ## 排除超突变样本 max_coding_muts_per_sample
     # Optional: Excluding samples exceeding the limit of mutations/sample [see Default parameters]
     nsampl = sort(table(mutations$sampleID))
     exclsamples = NULL
@@ -158,7 +193,7 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
         exclsamples = names(nsampl[nsampl>max_coding_muts_per_sample])
         mutations = mutations[!(mutations$sampleID %in% names(nsampl[nsampl>max_coding_muts_per_sample])),]
     }
-    
+    ## 排除超突变基因
     # Optional: Limiting the number of mutations per gene per sample (to minimise the impact of unannotated kataegis and other mutation clusters) [see Default parameters]
     mutrank = ave(mutations$pos, paste(mutations$sampleID,mutations$gene), FUN = function(x) rank(x))
     exclmuts = NULL
@@ -167,7 +202,7 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
         exclmuts = mutations[mutrank>max_muts_per_gene_per_sample,]
         mutations = mutations[mutrank<=max_muts_per_gene_per_sample,]
     }
-    
+    ## 对突变的额外的注释
     # Additional annotation of substitutions
     
     mutations$strand = sapply(RefCDS,function(x) x$strand)[mutations$geneind]
@@ -185,7 +220,7 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
     for (j in 1:length(RefCDS)) {
         RefCDS[[j]]$N = array(0, dim=c(192,4)) # Initialising the N matrices
     }
-    
+    ## 子功能：获得编码位置 在给定的外显子区间
     # Subfunction: obtaining the codon positions of a coding mutation given the exon intervals
     
     chr2cds = function(pos,cds_int,strand) {
@@ -195,7 +230,7 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
             return(which(rev(unlist(apply(cds_int, 1, function(x) x[1]:x[2]))) %in% pos))
         }
     }
-    
+    ## 
     # Annotating the functional impact of each substitution and populating the N matrices
     
     ref3_cod = mut3_cod = wrong_ref = aachange = ntchange = impact = codonsub = array(NA, nrow(mutations))
@@ -302,7 +337,7 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
     }
     annot = annot[order(annot$sampleID, annot$chr, annot$pos),]
     
-    
+    ## 评估 全局率 和 选择参数
     ## 3. Estimation of the global rate and selection parameters
     message("[3] Estimating global rates...")
     
@@ -310,7 +345,7 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
     Nall = array(sapply(RefCDS, function(x) x$N), dim=c(192,4,length(RefCDS)))
     L = apply(Lall, c(1,2), sum)
     N = apply(Nall, c(1,2), sum)
-    
+    ## 子功能  拟合突变模型
     # Subfunction: fitting substitution model
     
     fit_substmodel = function(N, L, substmodel) {
@@ -331,7 +366,7 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
         par = data.frame(name=gsub("\`","",rownames(ci)), mle=mle[rownames(ci)], cilow=ci[,1], cihigh=ci[,2])
         return(list(par=par, model=model))
     }
-    
+    ## 拟合所有突变率 和 3个全局选择参数
     # Fitting all mutation rates and the 3 global selection parameters
      
     poissout = fit_substmodel(N, L, substmodel) # Original substitution model
@@ -340,7 +375,7 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
     parmle =  setNames(par[,2], par[,1])
     mle_submodel = par
     rownames(mle_submodel) = NULL
-    
+    ## 拟合模型 用1 和 2 全局选择参数
     # Fitting models with 1 and 2 global selection parameters
     
     s1 = gsub("wmis","wall",gsub("wnon","wall",gsub("wspl","wall",substmodel)))
@@ -349,7 +384,7 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
     par2 = fit_substmodel(N, L, s2)$par # Substitution model with 2 selection parameter
     globaldnds = rbind(par, par1, par2)[c("wmis","wnon","wspl","wtru","wall"),]
     sel_loc = sel_cv = NULL
-    
+    ## 可变的 dnds 模型率 ： 基因突变率 从 单个基因的同义突变中推测出来
     ## 4. dNdSloc: variable rate dN/dS model (gene mutation rate inferred from synonymous subs in the gene only)
     
     genemuts = data.frame(gene_name = sapply(RefCDS, function(x) x$gene_name), n_syn=NA, n_mis=NA, n_non=NA, n_spl=NA, exp_syn=NA, exp_mis=NA, exp_non=NA, exp_spl=NA, stringsAsFactors=F)
@@ -392,14 +427,14 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
         sel_loc = sel_loc[order(sel_loc$pall_loc,sel_loc$pmis_loc,-sel_loc$wmis_loc),]
     }
     
-    
+    ## 阴性 的二项式回归 +局部的同义突变
     ## 5. dNdScv: Negative binomial regression (with or without covariates) + local synonymous mutations
     
     nbreg = nbregind = NULL
     if (outp > 2) {
         
         message("[5] Running dNdScv...")
-    
+        ## 协变量
         # Covariates
         if (is.null(cv)) {
             nbrdf = genemuts[,c("n_syn","exp_syn")]
@@ -412,7 +447,7 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
                 covs = covs[,1:maxcovs]
             }
             nbrdf = cbind(genemuts[,c("n_syn","exp_syn")], covs)
-            
+            ## 阴性二项式回归
             # Negative binomial regression for substitutions
             if (nrow(genemuts)<500) { # If there are <500 genes, we run the regression without covariates
                 model = MASS::glm.nb(n_syn ~ offset(log(exp_syn)) - 1 , data = nbrdf)
@@ -432,7 +467,7 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
         }
         theta = model$theta
         nbreg = model
-        
+        ## 子功能：
         # Subfunction: Analytical opt_t using only neutral subs
         mle_tcv = function(n_neutral, exp_rel_neutral, shape, scale) {
             tml = (n_neutral+shape-1)/(exp_rel_neutral+(1/scale))
@@ -441,36 +476,37 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
             }
             return(tml)
         }
-        
+        ## 子功能
         # Subfunction: dNdScv per gene
         selfun_cv = function(j) {
             y = as.numeric(genemuts[j,-1])
             x = RefCDS[[j]]
             exp_rel = y[5:8]/y[5]
+            ## gama
             # Gamma
             shape = theta
             scale = y[9]/theta
-            
+            ## 中性模型
             # a. Neutral model
             indneut = 1:4 # vector of neutral mutation types under this model (1=synonymous, 2=missense, 3=nonsense, 4=essential_splice)
             opt_t = mle_tcv(n_neutral=sum(y[indneut]), exp_rel_neutral=sum(exp_rel[indneut]), shape=shape, scale=scale)
             mrfold = max(1e-10, opt_t/y[5]) # Correction factor of "t" based on the obs/exp ratio of "neutral" mutations under the model
             ll0 = sum(dpois(x=x$N, lambda=x$L*mutrates*mrfold*t(array(c(1,1,1,1),dim=c(4,numrates))), log=T)) + dgamma(opt_t, shape=shape, scale=scale, log=T) # loglik null model
-            
+            ## 错义突变模型
             # b. Missense model: wmis==1, free wnon, free wspl
             indneut = 1:2
             opt_t = mle_tcv(n_neutral=sum(y[indneut]), exp_rel_neutral=sum(exp_rel[indneut]), shape=shape, scale=scale)
             mrfold = max(1e-10, opt_t/sum(y[5])) # Correction factor of "t" based on the obs/exp ratio of "neutral" mutations under the model
             wfree = y[3:4]/y[7:8]/mrfold; wfree[y[3:4]==0] = 0
             llmis = sum(dpois(x=x$N, lambda=x$L*mutrates*mrfold*t(array(c(1,1,wfree),dim=c(4,numrates))), log=T)) + dgamma(opt_t, shape=shape, scale=scale, log=T) # loglik free wmis
-            
+            ## 截断突变模型 
             # c. Truncating muts model: free wmis, wnon==wspl==1
             indneut = c(1,3,4)
             opt_t = mle_tcv(n_neutral=sum(y[indneut]), exp_rel_neutral=sum(exp_rel[indneut]), shape=shape, scale=scale)
             mrfold = max(1e-10, opt_t/sum(y[5])) # Correction factor of "t" based on the obs/exp ratio of "neutral" mutations under the model
             wfree = y[2]/y[6]/mrfold; wfree[y[2]==0] = 0
             lltrunc = sum(dpois(x=x$N, lambda=x$L*mutrates*mrfold*t(array(c(1,wfree,1,1),dim=c(4,numrates))), log=T)) + dgamma(opt_t, shape=shape, scale=scale, log=T) # loglik free wmis
-            
+            ## 自由选择模型
             # d. Free selection model: free wmis, free wnon, free wspl
             indneut = 1
             opt_t = mle_tcv(n_neutral=sum(y[indneut]), exp_rel_neutral=sum(exp_rel[indneut]), shape=shape, scale=scale)
@@ -500,7 +536,7 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
         sel_cv$qallsubs_cv = p.adjust(sel_cv$pallsubs_cv, method="BH")
         sel_cv = cbind(genemuts[,1:5],sel_cv)
         sel_cv = sel_cv[order(sel_cv$pallsubs_cv, sel_cv$pmis_cv, sel_cv$ptrunc_cv, -sel_cv$wmis_cv),] # Sorting genes in the output file
-        
+        ## indel 频发：基于负二项分布回归
         ## Indel recurrence: based on a negative binomial regression (ideally fitted excluding major known driver genes)
         
         if (nrow(indels) >= min_indels) {
@@ -517,7 +553,7 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
             } else {
                 geneindels$n_indused = geneindels[,2]
             }
-            
+            ## 剔除 已知的癌症基因
             # Excluding known cancer genes (first using the input or the default list, but if this fails, we use a shorter data-driven list)
             geneindels$excl = (geneindels[,1] %in% known_cancergenes)
             min_bkg_genes = 50
@@ -533,7 +569,7 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
             }
             
             geneindels$exp_unif = sum(geneindels[!geneindels$excl,"n_indused"]) / sum(geneindels[!geneindels$excl,"cds_length"]) * geneindels$cds_length
-          
+            ## 对indels进行负二项回归
             # Negative binomial regression for indels
             
             if (is.null(cv)) {
@@ -561,12 +597,12 @@ dndscv = function(mutations, gene_list = NULL, refdb = "hg19", sm = "192r_3w", k
             nbregind = model
             geneindels$exp_indcv = exp(predict(model,nbrdf_all))
             geneindels$wind = geneindels$n_indused / geneindels$exp_indcv
-        
+            ## 对每个基因的indel频发进行统计学检验
             # Statistical testing for indel recurrence per gene
         
             geneindels$pind = pnbinom(q=geneindels$n_indused-1, mu=geneindels$exp_indcv, size=theta_indels, lower.tail=F)
             geneindels$qind = p.adjust(geneindels$pind, method="BH")
-        
+            ## fisher 联合 p-values 
             # Fisher combined p-values (substitutions and indels)
             
             sel_cv = merge(sel_cv, geneindels, by="gene_name")[,c("gene_name","n_syn","n_mis","n_non","n_spl","n_indused","wmis_cv","wnon_cv","wspl_cv","wind","pmis_cv","ptrunc_cv","pallsubs_cv","pind","qmis_cv","qtrunc_cv","qallsubs_cv")]
