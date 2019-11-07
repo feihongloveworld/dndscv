@@ -73,7 +73,7 @@ dndscv = function(mutations,
     ## 变异位点转化为数值型 
     mutations[[3]] = as.numeric(mutations[[3]]) # Chromosome position as numeric
     ## 提取发生真实碱基突变的位点
-    mutations = mutations[mutations[,4]!=mutations[,5],] # Removing mutations with identical reference and mutant base
+    mutations[[3]] = as.numeric(mutations[[3]]) # Removing mutations with identical reference and mutant base
     ## 添加表头
     colnames(mutations) = c("sampleID","chr","pos","ref","mut")
     ## 提取存在NA的行，返回index
@@ -157,8 +157,9 @@ dndscv = function(mutations,
     }
     trinucsubsind = setNames(1:192, trinucsubs)
     ## 
-    ind = setNames(1:length(RefCDS), sapply(RefCDS,function(x) x$gene_name))
-    gr_genes_ind = ind[gr_genes$names]
+    ind = setNames(1:length(RefCDS), sapply(RefCDS,function(x) x$gene_name))  ## 每个基因名对应再RefCDS上的位置编号记录下来
+    ## 表达的基因
+    gr_genes_ind = ind[gr_genes$names]   ## 查看gr基因基因名对饮的ind   
     ## 警告：可能存在多碱基突变注释失败的情况,删除complex突变
     # Warning about possible unannotated dinucleotide substitutions
     if (any(diff(mutations$pos)==1)) {
@@ -180,9 +181,10 @@ dndscv = function(mutations,
     # Mapping mutations to genes
     gr_muts = GenomicRanges::GRanges(mutations$chr, IRanges::IRanges(mutations$start,mutations$end))
     ol = as.data.frame(GenomicRanges::findOverlaps(gr_muts, gr_genes, type="any", select="all"))
-    mutations = mutations[ol[,1],] # Duplicating subs if they hit more than one gene
-    mutations$geneind = gr_genes_ind[ol[,2]]
-    mutations$gene = sapply(RefCDS,function(x) x$gene_name)[mutations$geneind]
+                                            
+    mutations = mutations[ol[,1],] # Duplicating subs if they hit more than one gene  ## 如果对应到多个基因，删除第二个#
+    mutations$geneind = gr_genes_ind[ol[,2]]  ## 添加上对应基因再RefDCS上的位置
+    mutations$gene = sapply(RefCDS,function(x) x$gene_name)[mutations$geneind] ## 添加上基因名
     mutations = unique(mutations)
     ## 排除超突变样本 max_coding_muts_per_sample
     # Optional: Excluding samples exceeding the limit of mutations/sample [see Default parameters]
@@ -204,11 +206,13 @@ dndscv = function(mutations,
     }
     ## 对突变的额外的注释
     # Additional annotation of substitutions
-    
+    ## 转录本的链信息
     mutations$strand = sapply(RefCDS,function(x) x$strand)[mutations$geneind]
+    ##  snv
     snv = (mutations$ref %in% nt & mutations$mut %in% nt)
     if (!any(snv)) { stop("Zero coding substitutions found in this dataset. Unable to run dndscv. Common causes for this error are inputting only indels or using chromosome names different to those in the reference database (e.g. chr1 vs 1)") }
     indels = mutations[!snv,]
+    ## 取出snv
     mutations = mutations[snv,]
     mutations$ref_cod = mutations$ref
     mutations$mut_cod = mutations$mut
@@ -216,74 +220,94 @@ dndscv = function(mutations,
     isminus = (mutations$strand==-1)
     mutations$ref_cod[isminus] = compnt[mutations$ref[isminus]]
     mutations$mut_cod[isminus] = compnt[mutations$mut[isminus]]
-    
+    ##############################################################################################
     for (j in 1:length(RefCDS)) {
         RefCDS[[j]]$N = array(0, dim=c(192,4)) # Initialising the N matrices
+        ## 再 N列表中添加192 行 + 4列的矩阵
     }
     ## 子功能：获得编码位置 在给定的外显子区间
     # Subfunction: obtaining the codon positions of a coding mutation given the exon intervals
     
     chr2cds = function(pos,cds_int,strand) {
         if (strand==1) {
-            return(which(unlist(apply(cds_int, 1, function(x) x[1]:x[2])) %in% pos))
+            return(which(unlist(apply(cds_int, 1, function(x) x[1]:x[2])) %in% pos))  ## 返回当前位置再外显子上的坐标
         } else if (strand==-1) {
             return(which(rev(unlist(apply(cds_int, 1, function(x) x[1]:x[2]))) %in% pos))
         }
     }
     ## 
     # Annotating the functional impact of each substitution and populating the N matrices
-    
+    ## 每个突变简历array
     ref3_cod = mut3_cod = wrong_ref = aachange = ntchange = impact = codonsub = array(NA, nrow(mutations))
     
     for (j in 1:nrow(mutations)) {
     
-        geneind = mutations$geneind[j]
-        pos = mutations$pos[j]
-        
+        geneind = mutations$geneind[j]  ## 基因编号
+        pos = mutations$pos[j]          ## 对应的位置
+        ## 注释潜在的剪切位点
         if (any(pos == RefCDS[[geneind]]$intervals_splice)) { # Essential splice-site substitution
         
             impact[j] = "Essential_Splice"; impind = 4
-            pos_ind = (pos==RefCDS[[geneind]]$intervals_splice)
-            cdsnt = RefCDS[[geneind]]$seq_splice[pos_ind]
+            pos_ind = (pos==RefCDS[[geneind]]$intervals_splice)  ## 当前位置所在的剪切位点的编号
+            cdsnt = RefCDS[[geneind]]$seq_splice[pos_ind]    ## 剪切位点的碱基
+             ## ref三碱基               ## 剪切位点的上游一个碱基            当前碱基                    下游一个碱基
             ref3_cod[j] = sprintf("%s%s%s", RefCDS[[geneind]]$seq_splice1up[pos_ind], RefCDS[[geneind]]$seq_splice[pos_ind], RefCDS[[geneind]]$seq_splice1down[pos_ind])
+            ##   -1碱基 突变碱基  +1碱基
             mut3_cod[j] = sprintf("%s%s%s", RefCDS[[geneind]]$seq_splice1up[pos_ind], mutations$mut_cod[j], RefCDS[[geneind]]$seq_splice1down[pos_ind])
             aachange[j] = ntchange[j] = codonsub[j] = "."
 
         } else { # Coding substitution
         
             pos_ind = chr2cds(pos, RefCDS[[geneind]]$intervals_cds, RefCDS[[geneind]]$strand)
-            cdsnt = RefCDS[[geneind]]$seq_cds[pos_ind]
+            cdsnt = RefCDS[[geneind]]$seq_cds[pos_ind]   ## cds上的碱基
+           ##    cds前一个碱基  ref碱基  后一个碱基
             ref3_cod[j] = sprintf("%s%s%s", RefCDS[[geneind]]$seq_cds1up[pos_ind], RefCDS[[geneind]]$seq_cds[pos_ind], RefCDS[[geneind]]$seq_cds1down[pos_ind])
+           ## cds前一个碱基  突变碱基 后一个碱基
             mut3_cod[j] = sprintf("%s%s%s", RefCDS[[geneind]]$seq_cds1up[pos_ind], mutations$mut_cod[j], RefCDS[[geneind]]$seq_cds1down[pos_ind])
+           ## 密码子的位置
             codon_pos = c(ceiling(pos_ind/3)*3-2, ceiling(pos_ind/3)*3-1, ceiling(pos_ind/3)*3)
+           ## 取得ref的密码子碱基
             old_codon = as.character(as.vector(RefCDS[[geneind]]$seq_cds[codon_pos]))
+           ## 再cds上的位置
             pos_in_codon = pos_ind-(ceiling(pos_ind/3)-1)*3
+           ## 突变后的密码子
             new_codon = old_codon; new_codon[pos_in_codon] = mutations$mut_cod[j]
+           ## 突变前的氨基酸
             old_aa = seqinr::translate(old_codon, numcode = numcode)
+           ## 突变后的氨基酸
             new_aa = seqinr::translate(new_codon, numcode = numcode)
+           ## ref氨基酸  氨基酸位置  老氨基酸
             aachange[j] = sprintf('%s%0.0f%s',old_aa,ceiling(pos_ind/3),new_aa)
+           ## 碱基变化  突变碱基  突变碱基
             ntchange[j] = sprintf('%s%0.0f%s',mutations$ref_cod[j],pos_ind,mutations$mut_cod[j])
+           ## G>C
             codonsub[j] = sprintf('%s>%s',paste(old_codon,collapse=""),paste(new_codon,collapse=""))
-        
+           ## 如果新氨基酸和旧氨基酸，同义突变
             # Annotating the impact of the mutation
             if (new_aa == old_aa){ 
                 impact[j] = "Synonymous"; impind = 1
+            # 新氨基酸为*  沉默突变
             } else if (new_aa == "*"){
                 impact[j] = "Nonsense"; impind = 3
+            # 老氨基酸不为* 错译突变
             } else if (old_aa != "*"){
                 impact[j] = "Missense"; impind = 2
+            # 老氨基酸为* 终止子丢失
             } else if (old_aa=="*") {
                 impact[j] = "Stop_loss"; impind = NA
             }
         }
         
         if (mutations$ref_cod[j] != as.character(cdsnt)) { # Incorrect base annotation in the input mutation file (the mutation will be excluded with a warning)
-            wrong_ref[j] = 1
+            wrong_ref[j] = 1  ## 如果ref碱基和cds碱基不一致，位点存放到防止到wrong_ref 中
         } else if (!is.na(impind)) { # Correct base annotation in the input mutation file
+          ## 影响不为空
+            ## 三碱基替换 CAA>CAT  得到三碱基编号
             trisub = trinucsubsind[ paste(ref3_cod[j], mut3_cod[j], sep=">") ]
+            ##                   三碱基编号  影响编号           +1 
             RefCDS[[geneind]]$N[trisub,impind] = RefCDS[[geneind]]$N[trisub,impind] + 1 # Adding the mutation to the N matrices
         }
-      
+        ### 打印提示信息
         if (round(j/1e4)==(j/1e4)) { message(sprintf('    %0.3g%% ...', round(j/nrow(mutations),2)*100)) }
     }
     
@@ -291,9 +315,12 @@ dndscv = function(mutations,
     mutations$mut3_cod = mut3_cod
     mutations$aachange = aachange
     mutations$ntchange = ntchange
-    mutations$codonsub = codonsub
+    mutations$codonsub = codonsub  ## 碱基替换
     mutations$impact = impact
-    mutations$pid = sapply(RefCDS,function(x) x$protein_id)[mutations$geneind]
+    mutations$pid = sapply(RefCDS,function(x) x$protein_id)[mutations$geneind]  ## 添加蛋白编号
+    ## 
+    错误注释位点
+    如果少于10%，
     
     if (any(!is.na(wrong_ref))) {
         if (mean(!is.na(wrong_ref)) < 0.1) { # If fewer than 10% of mutations have a wrong reference base, we warn the user
@@ -301,26 +328,39 @@ dndscv = function(mutations,
         } else { # If more than 10% of mutations have a wrong reference base, we stop the execution (likely wrong assembly or a serious problem with the data)
             stop(sprintf('%0.0f (%0.2g%%) mutations have a wrong reference base. Please confirm that you are not running data from a different assembly or species.', sum(!is.na(wrong_ref)), 100*mean(!is.na(wrong_ref))))
         }
+    ## 筛选正确注释的位点
         wrong_refbase = mutations[!is.na(wrong_ref), 1:5]
-        mutations = mutations[is.na(wrong_ref),]
+        mutations = mutations[is.na(wrong_ref),]   
     }
-    
+    ## 看是否存在indel信息；
     if (any(nrow(indels))) { # If there are indels we concatenate the tables of subs and indels
         indels = cbind(indels, data.frame(ref_cod=".", mut_cod=".", ref3_cod=".", mut3_cod=".", aachange=".", ntchange=".", codonsub=".", impact="no-SNV", pid=sapply(RefCDS,function(x) x$protein_id)[indels$geneind]))
         
         # Annotation of indels
+        ## 判断ins 还是 del
         ins = nchar(gsub("-","",indels$ref))<nchar(gsub("-","",indels$mut))
         del = nchar(gsub("-","",indels$ref))>nchar(gsub("-","",indels$mut))
+        ## 双核苷酸变异
         multisub = nchar(gsub("-","",indels$ref))==nchar(gsub("-","",indels$mut)) # Including dinucleotides
+        ## ref 和 mut变化的碱基说
         l = nchar(gsub("-","",indels$ref))-nchar(gsub("-","",indels$mut))
+        ## 构建每个indels的字符
         indelstr = rep(NA,nrow(indels))
         for (j in 1:nrow(indels)) {
+            ## indel 基因编号
             geneind = indels$geneind[j]
+            ## indels 的起始位置，连续的
             pos = indels$start[j]:indels$end[j]
+            ## 如果时ins，pos-1 pos
             if (ins[j]) { pos = c(pos-1,pos) } # Adding the upstream base for insertions
+            ## pos的位置 cds的位置
             pos_ind = chr2cds(pos, RefCDS[[geneind]]$intervals_cds, RefCDS[[geneind]]$strand)
             if (length(pos_ind)>0) {
+                ## 框内
                 inframe = (length(pos_ind) %% 3) == 0
+                ## ins frshift infram
+                ## del frshift infram
+                ## 双核苷酸改变 MNV
                 if (ins[j]) { # Insertion
                     indelstr[j] = sprintf("%0.0f-%0.0f-ins%s",min(pos_ind),max(pos_ind),c("frshift","inframe")[inframe+1])
                 } else if (del[j]) { # Deletion
@@ -330,49 +370,69 @@ dndscv = function(mutations,
                 }
             }
         }
+        ## 标记indel的突变类型 添加到碱基变化中
         indels$ntchange = indelstr
+        ## 合并snv 和 indels
         annot = rbind(mutations, indels)
     } else {
         annot = mutations
     }
+    ## 样本id  chr  pos 排序
     annot = annot[order(annot$sampleID, annot$chr, annot$pos),]
     
     ## 评估 全局率 和 选择参数
     ## 3. Estimation of the global rate and selection parameters
     message("[3] Estimating global rates...")
-    
+    ## 
     Lall = array(sapply(RefCDS, function(x) x$L), dim=c(192,4,length(RefCDS)))
+    ## 
     Nall = array(sapply(RefCDS, function(x) x$N), dim=c(192,4,length(RefCDS)))
-    L = apply(Lall, c(1,2), sum)
+    ## 计算三碱基变异的不同突变类型的所有碱基的综合，这个数据的来源时啥？
+    L = apply(Lall, c(1,2), sum)  ## 二维矩阵
+    ## 计算当前数据集合中的对应的信息
     N = apply(Nall, c(1,2), sum)
     ## 子功能  拟合突变模型
     # Subfunction: fitting substitution model
     
     fit_substmodel = function(N, L, substmodel) {
-    
-        l = c(L); n = c(N); r = c(substmodel)
-        n = n[l!=0]; r = r[l!=0]; l = l[l!=0]
-        
+        ## 将矩阵拉伸成向量
+        l = c(L); 
+        n = c(N); 
+        r = c(substmodel)
+        n = n[l!=0]; 
+        r = r[l!=0]; 
+        l = l[l!=0];
+        ## 
         params = unique(base::strsplit(x=paste(r,collapse="*"), split="\\*")[[1]])
+      
         indmat = as.data.frame(array(0, dim=c(length(r),length(params))))
         colnames(indmat) = params
         for (j in 1:length(r)) {
             indmat[j, base::strsplit(r[j], split="\\*")[[1]]] = 1
         }
-        
+        ## 广义线性回归模型    
+        ##                            offset 偏置量  以log(l)作为偏置量
         model = glm(formula = n ~ offset(log(l)) + . -1, data=indmat, family=poisson(link=log))
+        ## exp，自然对数e为底指数函数，全称Exponential(指数曲线)。
+        ## 提取系数
         mle = exp(coefficients(model)) # Maximum-likelihood estimates for the rate params
+        ## Wald置信区间 ？？？
         ci = exp(confint.default(model)) # Wald confidence intervals
         par = data.frame(name=gsub("\`","",rownames(ci)), mle=mle[rownames(ci)], cilow=ci[,1], cihigh=ci[,2])
+        ## 返回参数和模型
         return(list(par=par, model=model))
     }
     ## 拟合所有突变率 和 3个全局选择参数
     # Fitting all mutation rates and the 3 global selection parameters
-     
+    ## 原始的突变模型，泊松分布
     poissout = fit_substmodel(N, L, substmodel) # Original substitution model
+    ## 分布参数
     par = poissout$par
+    ## 分布模型
     poissmodel = poissout$model
+    ## 参数的第一列为第二列的表头
     parmle =  setNames(par[,2], par[,1])
+    ## 最大似然子模型
     mle_submodel = par
     rownames(mle_submodel) = NULL
     ## 拟合模型 用1 和 2 全局选择参数
@@ -384,10 +444,30 @@ dndscv = function(mutations,
     par2 = fit_substmodel(N, L, s2)$par # Substitution model with 2 selection parameter
     globaldnds = rbind(par, par1, par2)[c("wmis","wnon","wspl","wtru","wall"),]
     sel_loc = sel_cv = NULL
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
     ## 可变的 dnds 模型率 ： 基因突变率 从 单个基因的同义突变中推测出来
     ## 4. dNdSloc: variable rate dN/dS model (gene mutation rate inferred from synonymous subs in the gene only)
+    ## 只从当前基因的同义突变中推测基因的突变率
     
-    genemuts = data.frame(gene_name = sapply(RefCDS, function(x) x$gene_name), n_syn=NA, n_mis=NA, n_non=NA, n_spl=NA, exp_syn=NA, exp_mis=NA, exp_non=NA, exp_spl=NA, stringsAsFactors=F)
+    genemuts = data.frame(gene_name = sapply(RefCDS, 
+                                             function(x) x$gene_name), 
+                                             n_syn=NA, 
+                                             n_mis=NA, 
+                                             n_non=NA, 
+                                             n_spl=NA, 
+                                             exp_syn=NA, 
+                                             exp_mis=NA, 
+                                             exp_non=NA, 
+                                             exp_spl=NA, 
+                                             stringsAsFactors=F)
     genemuts[,2:5] = t(sapply(RefCDS, function(x) colSums(x$N)))
     mutrates = sapply(substmodel[,1], function(x) prod(parmle[base::strsplit(x,split="\\*")[[1]]])) # Expected rate per available site
     genemuts[,6:9] = t(sapply(RefCDS, function(x) colSums(x$L*mutrates)))
