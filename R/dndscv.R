@@ -414,9 +414,10 @@ dndscv = function(mutations,
         ##                            offset 偏置量  以log(l)作为偏置量
         model = glm(formula = n ~ offset(log(l)) + . -1, data=indmat, family=poisson(link=log))
         ## exp，自然对数e为底指数函数，全称Exponential(指数曲线)。
-        ## 提取系数
+        ## 提取系数   截距 和 斜率
         mle = exp(coefficients(model)) # Maximum-likelihood estimates for the rate params
         ## Wald置信区间 ？？？
+      ##           置信区间
         ci = exp(confint.default(model)) # Wald confidence intervals
         par = data.frame(name=gsub("\`","",rownames(ci)), mle=mle[rownames(ci)], cilow=ci[,1], cihigh=ci[,2])
         ## 返回参数和模型
